@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from datetime import date, datetime
 from functools import wraps
+from urllib.parse import urlsplit
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 from flask_socketio import SocketIO, join_room
@@ -63,12 +64,27 @@ TERMS = ("Term 1", "Term 2", "Term 3")
 
 def connect_db():
     """Create a fresh connection per operation instead of keeping a stale global one."""
-    database_url = os.getenv("DATABASE_URL")
+    # Render may need Supabase's IPv4 shared pooler while local development uses
+    # the direct IPv6 URL. Set DATABASE_POOLER_URL only on IPv4-only hosts.
+    database_url = os.getenv("DATABASE_POOLER_URL") or os.getenv("DATABASE_URL")
     if not database_url:
         raise psycopg.OperationalError(
             "DATABASE_URL is not configured. Add your Supabase Postgres connection string."
         )
-    return psycopg.connect(database_url, connect_timeout=5, sslmode="require")
+    try:
+        return psycopg.connect(database_url, connect_timeout=10, sslmode="require")
+    except psycopg.OperationalError as error:
+        hostname = urlsplit(database_url).hostname or ""
+        network_error = str(error).lower()
+        if (hostname.startswith("db.") and "supabase.co" in hostname
+                and any(message in network_error for message in
+                        ("network is unreachable", "no route to host", "timed out"))):
+            raise psycopg.OperationalError(
+                "Supabase direct database host is IPv6-only, but this host cannot reach IPv6. "
+                "Set DATABASE_POOLER_URL to the Session pooler connection string from "
+                "Supabase Dashboard > Connect > Session pooler, then redeploy."
+            ) from error
+        raise
 
 
 def fetch_all(sql, params=()):
