@@ -7,6 +7,7 @@ The legacy tsec and student.sec columns are retained in the database but are not
 """
 
 import os
+from pathlib import Path
 from datetime import date, datetime
 from functools import wraps
 
@@ -15,6 +16,36 @@ from flask_socketio import SocketIO, join_room
 import psycopg
 from psycopg.rows import dict_row
 from psycopg import Error
+
+
+def load_local_environment():
+    """Load simple KEY=value entries from .env without requiring python-dotenv."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).with_name(".env"))
+        return
+    except ImportError:
+        pass
+
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        if not separator or not key.strip():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key.strip(), value)
+
+
+load_local_environment()
 
 
 app = Flask(__name__)
@@ -178,19 +209,22 @@ def teacher_home_page():
 
 
 @app.route("/admission", methods=["GET", "POST"], endpoint="admission")
-@login_required("teacher")
 def student_admission_page():
-    teacher_id = session["tid"]
+    teacher_id = session.get("tid")
     teacher_assignments = []
-    if request.method == "GET":
-        try:
+    try:
+        if teacher_id:
             teacher_assignments = fetch_all(
                 "SELECT DISTINCT tclass FROM teacher WHERE id=%s AND tclass IS NOT NULL ORDER BY tclass",
                 (teacher_id,),
             )
-        except Error:
-            app.logger.exception("Could not load teacher class assignments")
-            flash("Class choices could not be loaded.", "error")
+        else:
+            teacher_assignments = fetch_all(
+                "SELECT DISTINCT tclass FROM teacher WHERE tclass IS NOT NULL ORDER BY tclass"
+            )
+    except Error:
+        app.logger.exception("Could not load admission class choices")
+        flash("Class choices could not be loaded.", "error")
 
     if request.method == "POST":
         fields = {
@@ -230,8 +264,10 @@ def student_admission_page():
             cursor = connection.cursor()
             try:
                 cursor.execute(
-                    "SELECT id, tclass FROM teacher WHERE id=%s AND tclass=%s ORDER BY id LIMIT 1",
-                    (teacher_id, int(fields["st_class"])),
+                    "SELECT id, tclass FROM teacher WHERE tclass=%s "
+                    + ("AND id=%s " if teacher_id else "")
+                    + "ORDER BY id LIMIT 1",
+                    (int(fields["st_class"]), teacher_id) if teacher_id else (int(fields["st_class"]),),
                 )
                 assigned_teacher = cursor.fetchone()
                 if not assigned_teacher:
@@ -267,14 +303,6 @@ def student_admission_page():
             app.logger.exception("Student admission database error")
             flash("Admission could not be saved. Check the student table and database connection.", "error")
 
-    if request.method == "POST" and not teacher_assignments:
-        try:
-            teacher_assignments = fetch_all(
-                "SELECT DISTINCT tclass FROM teacher WHERE id=%s AND tclass IS NOT NULL ORDER BY tclass",
-                (teacher_id,),
-            )
-        except Error:
-            app.logger.exception("Could not reload teacher class assignments")
     return render_template("admission.html", teacher_assignments=teacher_assignments,
                            school_year=date.today().year)
 
