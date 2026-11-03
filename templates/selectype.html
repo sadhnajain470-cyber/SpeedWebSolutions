@@ -1,0 +1,16 @@
+{% extends 'base.html' %}{% block title %}Welcome{% endblock %}{% block content %}
+<section class="landing-hero">
+  <div class="hero-copy"><div class="live-pill"><span class="live-dot"></span> YOUR CAMPUS, IN MOTION</div><div class="eyebrow">A brighter school day</div>
+    <h1 class="heading">Big energy.<br><span>Better learning.</span></h1>
+    <p class="sub">Attendance, marks and student progress come together in one vibrant school portal.</p>
+    <div class="hero-tags"><span>ATTENDANCE</span><i></i><span>RESULTS</span><i></i><span>PROGRESS</span></div>
+  </div>
+  <div class="hero-art" aria-hidden="true"><div class="art-halo"></div><div class="art-ring ring-one"><b></b></div><div class="art-ring ring-two"><b></b></div><div class="art-ring ring-three"><b></b></div><div class="art-core"><span>CF</span><small>CAMPUS<br>FLOW</small></div><div class="float-chip chip-top"><span class="chip-icon">01</span><span>ATTENDANCE<small>Every day counts</small></span></div><div class="float-chip chip-bottom"><span class="chip-icon pink-chip">02</span><span>RESULTS<small>Progress, visualized</small></span></div><span class="art-star star-a">*</span><span class="art-star star-b">+</span><span class="art-star star-c">*</span></div>
+</section>
+<div class="section-label"><span>CHOOSE YOUR SPACE</span><i></i><small>Two portals and a simple way to join</small></div>
+<div class="grid cards portal-cards landing-portals">
+  <article class="card reveal"><span class="card-index">01 / TEACHER</span><div class="icon">T</div><h2>Teacher portal</h2><p>Take attendance, add marks and keep your classroom records in one place.</p><a class="btn" href="{{ url_for('teacher_login') }}">Enter teacher space <span class="btn-arrow">→</span></a></article>
+  <article class="card reveal"><span class="card-index">02 / STUDENT</span><div class="icon cyan">S</div><h2>Student portal</h2><p>Check attendance and explore term marks with clear progress charts.</p><a class="btn" href="{{ url_for('student_login') }}">Enter student space <span class="btn-arrow">→</span></a></article>
+  <article class="card reveal admission-entry-card"><span class="card-index">03 / JOIN CAMPUS</span><div class="icon gold-icon">+</div><h2>New admission</h2><p>Register a student, choose class and section, and create their login password.</p><a class="btn" href="{{ url_for('admission') }}">Start admission <span class="btn-arrow">→</span></a></article>
+</div>
+{% endblock %}
