@@ -1,7 +1,3 @@
-import eventlet
-
-eventlet.monkey_patch()
-
 """CampusFlow school portal.
 
 Database tables expected by the existing project:
@@ -63,7 +59,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "0") == "1",
     PERMANENT_SESSION_LIFETIME=60 * 60 * 8,
 )
-socketio = SocketIO(app, async_mode="eventlet")  # Same-origin clients only; no wildcard CORS.
+socketio = SocketIO(app, async_mode="threading")  # Same-origin clients only; no wildcard CORS.
 
 TERMS = ("Term 1", "Term 2", "Term 3")
 
