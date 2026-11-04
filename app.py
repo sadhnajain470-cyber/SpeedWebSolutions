@@ -10,11 +10,13 @@ import os
 from pathlib import Path
 from datetime import date, datetime
 from functools import wraps
+from threading import Lock
 from urllib.parse import urlsplit
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 from flask_socketio import SocketIO, join_room
 import psycopg
+from psycopg_pool import ConnectionPool, PoolTimeout
 from psycopg.rows import dict_row
 from psycopg import Error
 
@@ -61,9 +63,35 @@ socketio = SocketIO(app, async_mode="threading")  # Same-origin clients only; no
 
 TERMS = ("Term 1", "Term 2", "Term 3")
 
+_db_pool = None
+_db_pool_lock = Lock()
+
+
+def get_db_pool(database_url):
+    """Create a small process-wide pool so requests can reuse database connections."""
+    global _db_pool
+    if _db_pool is None:
+        with _db_pool_lock:
+            if _db_pool is None:
+                pool = ConnectionPool(
+                    conninfo=database_url,
+                    min_size=1,
+                    max_size=5,
+                    timeout=10,
+                    kwargs={"sslmode": "require"},
+                    open=False,
+                )
+                try:
+                    pool.open(wait=True, timeout=10)
+                except Exception:
+                    pool.close()
+                    raise
+                _db_pool = pool
+    return _db_pool
+
 
 def connect_db():
-    """Create a fresh connection per operation instead of keeping a stale global one."""
+    """Borrow a connection from the process-wide pool."""
     # Render may need Supabase's IPv4 shared pooler while local development uses
     # the direct IPv6 URL. Set DATABASE_POOLER_URL only on IPv4-only hosts.
     database_url = os.getenv("DATABASE_POOLER_URL") or os.getenv("DATABASE_URL")
@@ -72,19 +100,33 @@ def connect_db():
             "DATABASE_URL is not configured. Add your Supabase Postgres connection string."
         )
     try:
-        return psycopg.connect(database_url, connect_timeout=10, sslmode="require")
-    except psycopg.OperationalError as error:
+        return get_db_pool(database_url).getconn(timeout=10)
+    except (psycopg.OperationalError, PoolTimeout) as error:
         hostname = urlsplit(database_url).hostname or ""
         network_error = str(error).lower()
         if (hostname.startswith("db.") and "supabase.co" in hostname
-                and any(message in network_error for message in
-                        ("network is unreachable", "no route to host", "timed out"))):
+                and (isinstance(error, PoolTimeout) or any(
+                    message in network_error
+                    for message in ("network is unreachable", "no route to host", "timed out")
+                ))):
             raise psycopg.OperationalError(
                 "Supabase direct database host is IPv6-only, but this host cannot reach IPv6. "
                 "Set DATABASE_POOLER_URL to the Session pooler connection string from "
                 "Supabase Dashboard > Connect > Session pooler, then redeploy."
             ) from error
+        if isinstance(error, PoolTimeout):
+            raise psycopg.OperationalError(
+                "Timed out waiting for a database connection from the connection pool."
+            ) from error
         raise
+
+
+def release_db(connection):
+    """Return a borrowed connection to the pool."""
+    if _db_pool is None:
+        connection.close()
+        return
+    _db_pool.putconn(connection)
 
 
 def fetch_all(sql, params=()):
@@ -95,7 +137,7 @@ def fetch_all(sql, params=()):
         return cursor.fetchall()
     finally:
         cursor.close()
-        connection.close()
+        release_db(connection)
 
 
 def next_table_id(cursor, table):
@@ -309,7 +351,7 @@ def student_admission_page():
                 raise
             finally:
                 cursor.close()
-                connection.close()
+                release_db(connection)
 
             flash(f"Admission completed. Student ID: {assigned_id} | Teacher ID: {teacher_id}", "success")
             return redirect(url_for("admission"))
@@ -414,7 +456,7 @@ def attendance_page():
             raise
         finally:
             cursor.close()
-            connection.close()
+            release_db(connection)
 
     except ValueError as error:
         flash(str(error), "error")
@@ -456,7 +498,7 @@ def delete_attendance_page():
                 raise
             finally:
                 cursor.close()
-                connection.close()
+                release_db(connection)
             if deleted:
                 emit_data_changed("attendance", "deleted", teacher_id=session["tid"],
                                   student_ids=(student_id,))
@@ -542,7 +584,7 @@ def marks_entry_page():
                 raise
             finally:
                 cursor.close()
-                connection.close()
+                release_db(connection)
         except ValueError as error:
             flash(str(error), "error")
         except Error:
@@ -592,7 +634,7 @@ def update_marks_page():
                 raise
             finally:
                 cursor.close()
-                connection.close()
+                release_db(connection)
             if count:
                 emit_data_changed("marks", "updated", teacher_id=session["tid"],
                                   student_ids=(student_id,))
