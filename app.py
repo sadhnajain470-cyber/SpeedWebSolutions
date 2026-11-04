@@ -1,3 +1,7 @@
+from gevent import monkey
+
+monkey.patch_all()
+
 """CampusFlow school portal.
 
 Database tables expected by the existing project:
@@ -5,10 +9,6 @@ teacher(id, tclass, tsec, password), student(id, student_name, password, tid, ye
 attendece(id, student_id, status, day, year), marks(id, student_id, subject, marks, term, session).
 The legacy tsec and student.sec columns are retained in the database but are not used by the website.
 """
-
-from gevent import monkey
-
-monkey.patch_all()
 
 import os
 from pathlib import Path
