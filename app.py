@@ -226,39 +226,63 @@ def teacher_home_page():
     stats = {"students": 0, "records": 0, "marks": 0}
     attendance_chart, term_chart = [], []
     try:
-        student_count = fetch_all("SELECT COUNT(*) AS total FROM student WHERE tid=%s", (session["tid"],))
-        stats["students"] = student_count[0]["total"] if student_count else 0
-        recent = fetch_all(
+        dashboard = fetch_all(
+            "WITH teacher_students AS ("
+            "SELECT id FROM student WHERE tid=%s"
+            "), recent_attendance AS ("
             "SELECT a.day, SUM((LOWER(a.status)='present')::int) AS present, COUNT(*) AS total "
-            "FROM attendece AS a JOIN student AS s ON s.id=a.student_id "
-            "WHERE s.tid=%s AND a.year=%s AND a.day IS NOT NULL "
-            "GROUP BY a.day ORDER BY a.day DESC LIMIT 7",
-            (session["tid"], year),
+            "FROM attendece AS a JOIN teacher_students AS s ON s.id=a.student_id "
+            "WHERE a.year=%s AND a.day IS NOT NULL "
+            "GROUP BY a.day ORDER BY a.day DESC LIMIT 7"
+            "), marks_by_term AS ("
+            "SELECT LOWER(REPLACE(m.term,' ','')) AS term_key, AVG(m.marks) AS average, "
+            "COUNT(m.marks) AS mark_count "
+            "FROM marks AS m JOIN teacher_students AS s ON s.id=m.student_id "
+            'WHERE m."session"=%s GROUP BY LOWER(REPLACE(m.term,\' \',\'\'))'
+            ") "
+            "SELECT "
+            "(SELECT COUNT(*) FROM teacher_students) AS student_count, "
+            "(SELECT COUNT(*) FROM marks AS m "
+            "JOIN teacher_students AS s ON s.id=m.student_id "
+            'WHERE m."session"=%s) AS mark_count, '
+            "COALESCE((SELECT json_agg(json_build_object("
+            "'day', day, 'present', present, 'total', total) ORDER BY day DESC) "
+            "FROM recent_attendance), '[]'::json) AS attendance, "
+            "COALESCE((SELECT json_agg(json_build_object("
+            "'term', term_key, 'average', average, 'count', mark_count)) "
+            "FROM marks_by_term WHERE term_key IN ('term1','term2','term3')), "
+            "'[]'::json) AS terms",
+            (session["tid"], year, year, year),
         )
-        recent.reverse()
-        for row in recent:
-            try:
-                label = parse_school_date(str(row["day"])[:10]).strftime("%d %b")
-            except (TypeError, ValueError):
-                app.logger.warning("Skipping invalid attendance date in dashboard chart")
-                continue
-            attendance_chart.append({"label": label, "value": int(row["present"] or 0),
-                                     "total": int(row["total"] or 0)})
-        stats["records"] = sum(row["total"] for row in attendance_chart)
-        mark_rows = fetch_all(
-            "SELECT m.term,m.marks FROM marks AS m "
-            "JOIN student AS s ON s.id=m.student_id "
-            'WHERE s.tid=%s AND m."session"=%s',
-            (session["tid"], year),
-        )
-        stats["marks"] = len(mark_rows)
-        buckets = {"term1": [], "term2": [], "term3": []}
-        for row in mark_rows:
-            key = str(row["term"] or "").lower().replace(" ", "")
-            if key in buckets and row["marks"] is not None:
-                buckets[key].append(int(row["marks"]))
-        term_chart = [{"label": f"Term {index}", "value": round(sum(buckets[f"term{index}"]) / len(buckets[f"term{index}"])) if buckets[f"term{index}"] else 0,
-                       "count": len(buckets[f"term{index}"])} for index in range(1, 4)]
+        if dashboard:
+            row = dashboard[0]
+            stats["students"] = int(row["student_count"] or 0)
+            stats["marks"] = int(row["mark_count"] or 0)
+            for record in reversed(row["attendance"] or []):
+                try:
+                    label = parse_school_date(str(record["day"])[:10]).strftime("%d %b")
+                except (TypeError, ValueError):
+                    app.logger.warning("Skipping invalid attendance date in dashboard chart")
+                    continue
+                attendance_chart.append({
+                    "label": label,
+                    "value": int(record["present"] or 0),
+                    "total": int(record["total"] or 0),
+                })
+            stats["records"] = sum(record["total"] for record in attendance_chart)
+            term_averages = {
+                record["term"]: record
+                for record in (row["terms"] or [])
+            }
+            term_chart = [
+                {
+                    "label": f"Term {index}",
+                    "value": round(term_averages[f"term{index}"]["average"])
+                    if term_averages.get(f"term{index}", {}).get("average") is not None else 0,
+                    "count": int(term_averages.get(f"term{index}", {}).get("count") or 0),
+                }
+                for index in range(1, 4)
+            ]
     except Error:
         app.logger.exception("Teacher dashboard chart query failed")
         flash("Some dashboard charts could not load from the database.", "error")
@@ -683,28 +707,49 @@ def student_login_page():
 @login_required("student")
 def student_home_page():
     year = date.today().year
-    attendance_rows, marks_rows = [], []
     stats = {"present": 0, "days": 0, "average": 0}
+    averages = []
     try:
-        attendance_rows = fetch_all(
-            "SELECT status FROM attendece WHERE year=%s AND student_id=%s",
-            (year, session["stid"]),
+        dashboard = fetch_all(
+            "WITH student_attendance AS ("
+            "SELECT status FROM attendece WHERE year=%s AND student_id=%s"
+            "), student_marks AS ("
+            "SELECT term, marks, LOWER(REPLACE(term,' ','')) AS term_key "
+            'FROM marks WHERE "session"=%s AND student_id=%s'
+            "), term_averages AS ("
+            "SELECT term_key, AVG(marks) AS average, COUNT(marks) AS mark_count "
+            "FROM student_marks GROUP BY term_key"
+            ") "
+            "SELECT "
+            "(SELECT COUNT(*) FROM student_attendance) AS days, "
+            "(SELECT COUNT(*) FROM student_attendance "
+            "WHERE LOWER(status)='present') AS present, "
+            "(SELECT COUNT(*) FROM student_marks) AS mark_count, "
+            "(SELECT AVG(marks) FROM student_marks) AS average, "
+            "COALESCE((SELECT json_agg(json_build_object("
+            "'term', term_key, 'average', average, 'count', mark_count)) "
+            "FROM term_averages WHERE term_key IN ('term1','term2','term3')), "
+            "'[]'::json) AS terms",
+            (year, session["stid"], year, session["stid"]),
         )
-        stats["days"] = len(attendance_rows)
-        stats["present"] = sum(str(row["status"]).lower() == "present" for row in attendance_rows)
-        marks_rows = fetch_all(
-            'SELECT term,marks FROM marks WHERE "session"=%s AND student_id=%s',
-            (year, session["stid"]),
-        )
-        buckets = {"term1": [], "term2": [], "term3": []}
-        for row in marks_rows:
-            key = str(row["term"] or "").lower().replace(" ", "")
-            if key in buckets and row["marks"] is not None:
-                buckets[key].append(int(row["marks"]))
-        averages = ([{"label": f"Term {index}", "value": round(sum(buckets[f"term{index}"]) / len(buckets[f"term{index}"])) if buckets[f"term{index}"] else 0,
-                      "count": len(buckets[f"term{index}"])} for index in range(1, 4)] if marks_rows else [])
-        all_marks = [int(row["marks"]) for row in marks_rows if row["marks"] is not None]
-        stats["average"] = round(sum(all_marks) / len(all_marks)) if all_marks else 0
+        if dashboard:
+            row = dashboard[0]
+            stats["days"] = int(row["days"] or 0)
+            stats["present"] = int(row["present"] or 0)
+            stats["average"] = round(row["average"]) if row["average"] is not None else 0
+            if row["mark_count"]:
+                term_averages = {record["term"]: record for record in (row["terms"] or [])}
+                averages = [
+                    {
+                        "label": f"Term {index}",
+                        "value": round(term_averages[f"term{index}"]["average"])
+                        if term_averages.get(f"term{index}", {}).get("average") is not None else 0,
+                        "count": int(term_averages.get(f"term{index}", {}).get("count") or 0),
+                    }
+                    for index in range(1, 4)
+                ]
+            else:
+                averages = []
     except Error:
         app.logger.exception("Student dashboard chart query failed")
         flash("Some progress charts could not load from the database.", "error")
@@ -724,11 +769,13 @@ def student_attendance_page():
         else:
             try:
                 rows = fetch_all(
-                    "SELECT status FROM attendece WHERE year=%s AND student_id=%s",
+                    "SELECT COUNT(*) AS total, "
+                    "COUNT(*) FILTER (WHERE LOWER(status)='present') AS present "
+                    "FROM attendece WHERE year=%s AND student_id=%s",
                     (int(selected_year), session["stid"]),
                 )
-                total = len(rows)
-                present = sum(str(row["status"]).lower() == "present" for row in rows)
+                total = int(rows[0]["total"] or 0) if rows else 0
+                present = int(rows[0]["present"] or 0) if rows else 0
                 if not total:
                     flash("No attendance records were found for that year.", "info")
             except Error:
@@ -750,23 +797,36 @@ def student_marks_page():
         else:
             try:
                 school_session = int(raw_session)
-                rows = fetch_all(
-                    'SELECT subject,marks FROM marks WHERE "session"=%s '
-                    'AND LOWER(REPLACE(term,\' \',\'\'))=%s AND student_id=%s ORDER BY subject',
-                    (school_session, term.lower().replace(" ", ""), session["stid"]),
+                report = fetch_all(
+                    "WITH student_marks AS ("
+                    "SELECT subject, marks, LOWER(REPLACE(term,' ','')) AS term_key "
+                    'FROM marks WHERE "session"=%s AND student_id=%s'
+                    "), term_averages AS ("
+                    "SELECT term_key, AVG(marks) AS average, COUNT(marks) AS mark_count "
+                    "FROM student_marks GROUP BY term_key"
+                    ") "
+                    "SELECT "
+                    "COALESCE((SELECT json_agg(json_build_object("
+                    "'subject', subject, 'marks', marks) ORDER BY subject) "
+                    "FROM student_marks WHERE term_key=%s), '[]'::json) AS rows, "
+                    "COALESCE((SELECT json_agg(json_build_object("
+                    "'term', term_key, 'average', average, 'count', mark_count)) "
+                    "FROM term_averages WHERE term_key IN ('term1','term2','term3')), "
+                    "'[]'::json) AS terms",
+                    (school_session, session["stid"], term.lower().replace(" ", "")),
                 )
-                all_rows = fetch_all(
-                    'SELECT term,marks FROM marks WHERE "session"=%s AND student_id=%s',
-                    (school_session, session["stid"]),
-                )
-                buckets = {"term1": [], "term2": [], "term3": []}
-                for result in all_rows:
-                    key = str(result["term"] or "").lower().replace(" ", "")
-                    if key in buckets and result["marks"] is not None:
-                        buckets[key].append(int(result["marks"]))
-                trend_chart = [{"label": f"Term {index}",
-                                "value": round(sum(buckets[f"term{index}"]) / len(buckets[f"term{index}"])) if buckets[f"term{index}"] else 0,
-                                "count": len(buckets[f"term{index}"])} for index in range(1, 4)]
+                if report:
+                    rows = report[0]["rows"] or []
+                    term_averages = {record["term"]: record for record in (report[0]["terms"] or [])}
+                    trend_chart = [
+                        {
+                            "label": f"Term {index}",
+                            "value": round(term_averages[f"term{index}"]["average"])
+                            if term_averages.get(f"term{index}", {}).get("average") is not None else 0,
+                            "count": int(term_averages.get(f"term{index}", {}).get("count") or 0),
+                        }
+                        for index in range(1, 4)
+                    ]
                 if not rows:
                     flash("No marks found for that term and school session.", "info")
             except ValueError:
