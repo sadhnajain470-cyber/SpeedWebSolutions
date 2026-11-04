@@ -6,6 +6,10 @@ attendece(id, student_id, status, day, year), marks(id, student_id, subject, mar
 The legacy tsec and student.sec columns are retained in the database but are not used by the website.
 """
 
+from gevent import monkey
+
+monkey.patch_all()
+
 import os
 from pathlib import Path
 from datetime import date, datetime
@@ -59,7 +63,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "0") == "1",
     PERMANENT_SESSION_LIFETIME=60 * 60 * 8,
 )
-socketio = SocketIO(app, async_mode="threading")  # Same-origin clients only; no wildcard CORS.
+socketio = SocketIO(app, async_mode="gevent")  # Same-origin clients only; no wildcard CORS.
 
 TERMS = ("Term 1", "Term 2", "Term 3")
 
@@ -76,7 +80,7 @@ def get_db_pool(database_url):
                 pool = ConnectionPool(
                     conninfo=database_url,
                     min_size=1,
-                    max_size=2,
+                    max_size=5,
                     timeout=10,
                     kwargs={"sslmode": "require"},
                     open=False,
@@ -294,6 +298,20 @@ def teacher_home_page():
 def student_admission_page():
     teacher_id = session.get("tid")
     teacher_assignments = []
+    try:
+        if teacher_id:
+            teacher_assignments = fetch_all(
+                "SELECT DISTINCT tclass FROM teacher WHERE id=%s AND tclass IS NOT NULL ORDER BY tclass",
+                (teacher_id,),
+            )
+        else:
+            teacher_assignments = fetch_all(
+                "SELECT DISTINCT tclass FROM teacher WHERE tclass IS NOT NULL ORDER BY tclass"
+            )
+    except Error:
+        app.logger.exception("Could not load admission class choices")
+        flash("Class choices could not be loaded.", "error")
+
     if request.method == "POST":
         fields = {
             "student_name": request.form.get("student_name", "").strip(),
@@ -331,30 +349,29 @@ def student_admission_page():
             connection = connect_db()
             cursor = connection.cursor()
             try:
+                cursor.execute(
+                    "SELECT id, tclass FROM teacher WHERE tclass=%s "
+                    + ("AND id=%s " if teacher_id else "")
+                    + "ORDER BY id LIMIT 1",
+                    (int(fields["st_class"]), teacher_id) if teacher_id else (int(fields["st_class"]),),
+                )
+                assigned_teacher = cursor.fetchone()
+                if not assigned_teacher:
+                    raise ValueError(
+                        f"Class {fields['st_class']} is not assigned to your account."
+                    )
+                teacher_id = assigned_teacher[0]
                 assigned_id = next_table_id(cursor, "student")
                 cursor.execute(
                     "INSERT INTO student (id,student_name,father_name,mother_name,phone_number,adhar_id,gender,"
                     "st_class,adress,password,lastfeemonth,lastfeeyear,tid,year) "
-                    "SELECT %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,t.id,%s "
-                    "FROM teacher AS t WHERE t.tclass=%s "
-                    + ("AND t.id=%s " if teacher_id else "")
-                    + "ORDER BY t.id LIMIT 1 RETURNING id,tid",
-                    (
-                        assigned_id, fields["student_name"], fields["father_name"],
-                        fields["mother_name"] or None, int(fields["phone_number"]),
-                        int(fields["adhar_id"]) if fields["adhar_id"] else None,
-                        fields["gender"], int(fields["st_class"]), fields["adress"] or None,
-                        fields["password"], fields["lastfeemonth"] or None,
-                        last_fee_year, school_year, int(fields["st_class"]),
-                        *((teacher_id,) if teacher_id else ()),
-                    ),
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (assigned_id, fields["student_name"], fields["father_name"], fields["mother_name"] or None,
+                     int(fields["phone_number"]), int(fields["adhar_id"]) if fields["adhar_id"] else None,
+                     fields["gender"], int(fields["st_class"]), fields["adress"] or None,
+                     fields["password"], fields["lastfeemonth"] or None,
+                     last_fee_year, teacher_id, school_year),
                 )
-                inserted_student = cursor.fetchone()
-                if not inserted_student:
-                    raise ValueError(
-                        f"Class {fields['st_class']} is not assigned to your account."
-                    )
-                assigned_id, teacher_id = inserted_student
                 connection.commit()
                 emit_data_changed("student", "created", teacher_id=teacher_id)
             except Exception:
@@ -371,20 +388,6 @@ def student_admission_page():
         except Error:
             app.logger.exception("Student admission database error")
             flash("Admission could not be saved. Check the student table and database connection.", "error")
-
-    try:
-        if teacher_id:
-            teacher_assignments = fetch_all(
-                "SELECT DISTINCT tclass FROM teacher WHERE id=%s AND tclass IS NOT NULL ORDER BY tclass",
-                (teacher_id,),
-            )
-        else:
-            teacher_assignments = fetch_all(
-                "SELECT DISTINCT tclass FROM teacher WHERE tclass IS NOT NULL ORDER BY tclass"
-            )
-    except Error:
-        app.logger.exception("Could not load admission class choices")
-        flash("Class choices could not be loaded.", "error")
 
     return render_template("admission.html", teacher_assignments=teacher_assignments,
                            school_year=date.today().year)
@@ -412,7 +415,7 @@ def attendance_page():
                 # Re-query students on the save request; Flask requests do not
                 # retain the students list from the previous Load request.
                 cursor.execute(
-                    "SELECT id, student_name FROM student WHERE tid=%s AND year=%s ORDER BY id",
+                    "SELECT id FROM student WHERE tid=%s AND year=%s ORDER BY id",
                     (teacher_id, selected_year),
                 )
                 assigned_students = cursor.fetchall()
@@ -435,24 +438,19 @@ def attendance_page():
                         values_sql = ",".join(["(%s,%s)"] * len(attendance_updates))
                         values = [value for update in attendance_updates for value in update]
                         cursor.execute(
-                            f"WITH attendance_input(student_id, status) AS (VALUES {values_sql}), "
-                            "updated AS ("
-                            "UPDATE attendece AS a SET status=v.status "
-                            "FROM attendance_input AS v "
-                            "WHERE a.student_id=v.student_id AND a.day=%s AND a.year=%s "
-                            "RETURNING a.student_id"
-                            "), inserted AS ("
-                            "INSERT INTO attendece (id,student_id,status,day,year) "
-                            "SELECT %s + ROW_NUMBER() OVER (ORDER BY v.student_id) - 1, "
-                            "v.student_id,v.status,%s,%s FROM attendance_input AS v "
-                            "WHERE NOT EXISTS (SELECT 1 FROM updated AS u "
-                            "WHERE u.student_id=v.student_id) "
-                            "RETURNING student_id"
-                            ") SELECT "
-                            "(SELECT COUNT(*) FROM updated) AS updated_count, "
-                            "(SELECT COUNT(*) FROM inserted) AS inserted_count",
-                            (*values, selected_day_text, selected_year,
-                             first_attendance_id, selected_day_text, selected_year),
+                            f"UPDATE attendece AS a SET status=v.status "
+                            f"FROM (VALUES {values_sql}) AS v(student_id,status) "
+                            "WHERE a.student_id=v.student_id AND a.day=%s AND a.year=%s",
+                            (*values, selected_day_text, selected_year),
+                        )
+                        cursor.execute(
+                            f"INSERT INTO attendece (id,student_id,status,day,year) "
+                            f"SELECT %s + ROW_NUMBER() OVER (ORDER BY v.student_id) - 1, "
+                            f"v.student_id,v.status,%s,%s FROM (VALUES {values_sql}) AS v(student_id,status) "
+                            "WHERE NOT EXISTS (SELECT 1 FROM attendece AS a "
+                            "WHERE a.student_id=v.student_id AND a.day=%s AND a.year=%s)",
+                            (first_attendance_id, selected_day_text, selected_year, *values,
+                             selected_day_text, selected_year),
                         )
 
                     connection.commit()
@@ -461,34 +459,25 @@ def attendance_page():
                         student_ids=(student["id"] for student in assigned_students),
                     )
                     flash("Attendance saved successfully.", "success")
-                    students = [
-                        {
-                            "student_id": student["id"],
-                            "name": student["student_name"],
-                            "status": request.form[str(student["id"])].strip().lower(),
-                        }
-                        for student in assigned_students
-                    ]
 
-            else:
-                cursor.execute(
-                    """
-                    SELECT
-                        s.id AS student_id,
-                        s.student_name AS name,
-                        COALESCE(a.status, 'absent') AS status
-                    FROM student AS s
-                    LEFT JOIN attendece AS a
-                        ON a.student_id = s.id
-                        AND a.day = %s
-                        AND a.year = %s
-                    WHERE s.tid = %s
-                        AND s.year = %s
-                    ORDER BY s.id
-                    """,
-                    (selected_day_text, selected_year, teacher_id, selected_year),
-                )
-                students = cursor.fetchall()
+            cursor.execute(
+                """
+                SELECT
+                    s.id AS student_id,
+                    s.student_name AS name,
+                    COALESCE(a.status, 'absent') AS status
+                FROM student AS s
+                LEFT JOIN attendece AS a
+                    ON a.student_id = s.id
+                    AND a.day = %s
+                    AND a.year = %s
+                WHERE s.tid = %s
+                    AND s.year = %s
+                ORDER BY s.id
+                """,
+                (selected_day_text, selected_year, teacher_id, selected_year),
+            )
+            students = cursor.fetchall()
 
         except Exception:
             connection.rollback()
@@ -596,22 +585,23 @@ def marks_entry_page():
         try:
             student_id, subject, marks, term, school_session = read_mark_form()
             connection = connect_db()
-            cursor = connection.cursor(row_factory=dict_row)
+            cursor = connection.cursor()
             try:
-                mark_id = next_table_id(cursor, "marks")
                 cursor.execute(
-                    'INSERT INTO marks (id,student_id,subject,marks,term,"session") '
-                    "SELECT %s,%s,%s,%s,%s,%s "
-                    "WHERE EXISTS (SELECT 1 FROM student WHERE id=%s AND tid=%s) "
-                    "RETURNING id",
-                    (mark_id, student_id, subject, marks, term, school_session,
-                     student_id, session["tid"]),
+                    "SELECT id FROM student WHERE id=%s AND tid=%s LIMIT 1",
+                    (student_id, session["tid"]),
                 )
-                inserted_mark = cursor.fetchone()
-                if not inserted_mark:
+                student = cursor.fetchone()
+                if not student:
                     connection.rollback()
                     flash("That student is not assigned to your teacher account.", "error")
                 else:
+                    student_id = student[0]
+                    mark_id = next_table_id(cursor, "marks")
+                    cursor.execute(
+                        'INSERT INTO marks (id,student_id,subject,marks,term,"session") VALUES (%s,%s,%s,%s,%s,%s)',
+                        (mark_id, student_id, subject, marks, term, school_session),
+                    )
                     connection.commit()
                     emit_data_changed("marks", "created", teacher_id=session["tid"],
                                       student_ids=(student_id,))
@@ -638,39 +628,34 @@ def update_marks_page():
         try:
             student_id, subject, marks, term, school_session = read_mark_form()
             connection = connect_db()
-            cursor = connection.cursor(row_factory=dict_row)
+            cursor = connection.cursor()
             try:
                 cursor.execute(
-                    "WITH authorized AS MATERIALIZED ("
-                    "SELECT EXISTS(SELECT 1 FROM student WHERE id=%s AND tid=%s) AS allowed"
-                    "), updated AS ("
-                    "UPDATE marks AS m SET marks=%s, term=%s "
-                    "WHERE m.student_id=%s AND m.subject=%s "
-                    "AND LOWER(REPLACE(m.term,' ',''))=%s AND m.\"session\"=%s "
-                    "AND (SELECT allowed FROM authorized) "
-                    "RETURNING m.id"
-                    ") "
-                    "SELECT authorized.allowed AS student_allowed, "
-                    "EXISTS(SELECT 1 FROM marks WHERE student_id=%s AND subject=%s "
-                    "AND LOWER(REPLACE(term,' ',''))=%s AND \"session\"=%s) AS mark_exists, "
-                    "(SELECT COUNT(*) FROM updated) AS updated_count "
-                    "FROM authorized",
-                    (
-                        student_id, session["tid"], marks, term, student_id,
-                        subject, term.lower().replace(" ", ""), school_session,
-                        student_id, subject, term.lower().replace(" ", ""), school_session,
-                    ),
+                    "SELECT id FROM student WHERE id=%s AND tid=%s LIMIT 1",
+                    (student_id, session["tid"]),
                 )
-                result = cursor.fetchone()
-                if not result["student_allowed"]:
+                if not cursor.fetchone():
                     connection.rollback()
                     flash("That student is not assigned to your teacher account.", "error")
                     return render_template("updatemarks.html", terms=TERMS)
-                if not result["mark_exists"]:
+
+                cursor.execute(
+                    "SELECT id FROM marks WHERE student_id=%s AND subject=%s "
+                    'AND LOWER(REPLACE(term,\' \',\'\'))=%s AND "session"=%s LIMIT 1',
+                    (student_id, subject, term.lower().replace(" ", ""), school_session),
+                )
+                if not cursor.fetchone():
                     connection.rollback()
                     flash("No matching mark record was found.", "info")
                     return render_template("updatemarks.html", terms=TERMS)
-                count = int(result["updated_count"] or 0)
+
+                cursor.execute(
+                    "UPDATE marks SET marks=%s, term=%s WHERE student_id=%s "
+                    'AND subject=%s AND LOWER(REPLACE(term,\' \',\'\'))=%s AND "session"=%s',
+                    (marks, term, student_id, subject,
+                     term.lower().replace(" ", ""), school_session),
+                )
+                count = cursor.rowcount
                 connection.commit()
             except Exception:
                 connection.rollback()
