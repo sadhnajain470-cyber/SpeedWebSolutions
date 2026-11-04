@@ -76,7 +76,7 @@ def get_db_pool(database_url):
                 pool = ConnectionPool(
                     conninfo=database_url,
                     min_size=1,
-                    max_size=5,
+                    max_size=2,
                     timeout=10,
                     kwargs={"sslmode": "require"},
                     open=False,
