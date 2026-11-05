@@ -13,7 +13,7 @@ from functools import wraps
 from threading import Lock
 from urllib.parse import urlsplit
 
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, redirect, render_template, request, send_from_directory, session, url_for
 from flask_socketio import SocketIO, join_room
 import psycopg
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -62,6 +62,30 @@ app.config.update(
 socketio = SocketIO(app, async_mode="threading")  # Same-origin clients only; no wildcard CORS.
 
 TERMS = ("Term 1", "Term 2", "Term 3")
+
+
+@app.get("/manifest.json")
+def manifest_json():
+    response = send_from_directory(
+        app.static_folder,
+        "manifest.webmanifest",
+        mimetype="application/manifest+json",
+    )
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    response = send_from_directory(
+        app.static_folder,
+        "service-worker.js",
+        mimetype="application/javascript",
+    )
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
+
 
 _db_pool = None
 _db_pool_lock = Lock()
