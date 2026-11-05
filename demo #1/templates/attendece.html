@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}Attendance{% endblock %}
+{% block content %}
+<div class="eyebrow">Teacher workspace / attendance</div>
+<h1 class="heading">Take attendance.</h1>
+<p class="sub">The class for the selected date loads automatically. Change the date to load a different class year.</p>
+<section class="panel">
+  <form method="post" class="form-grid">
+    <div class="field"><label for="date">Class date</label><input id="date" type="date" name="date" value="{{ selected_date }}" required></div>
+    <div class="field" style="justify-content:end"><input type="hidden" name="action" value="load"><button class="btn" type="submit">Load class →</button></div>
+  </form>
+  {% if students %}
+  <div class="badge" style="margin-top:20px">{{ students|length }} student{% if students|length != 1 %}s{% endif %} in this class</div>
+  <form method="post">
+    <input type="hidden" name="date" value="{{ selected_date }}">
+    <div class="table-wrap"><table><thead><tr><th>Student ID</th><th>Student</th><th>Status</th></tr></thead><tbody>
+    {% for student in students %}<tr><td>{{ student.student_id }}</td><td>{{ student.name }}</td><td><select name="{{ student.student_id }}"><option value="present" {% if student.status|lower == 'present' %}selected{% endif %}>Present</option><option value="absent" {% if student.status|lower != 'present' %}selected{% endif %}>Absent</option></select></td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="actions"><button class="btn" type="submit">Save attendance</button></div>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

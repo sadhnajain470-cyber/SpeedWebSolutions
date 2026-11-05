@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090817"><meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CampusFlow">
+  <title>{% block title %}CampusFlow{% endblock %} | CampusFlow</title>
+  <link rel="manifest" href="{{ url_for('manifest_json') }}">
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='admission-2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tuning.css', v='responsive-3') }}">
+</head>
+<body>
+<div class="aurora-layer" aria-hidden="true"></div><div class="grid-floor" aria-hidden="true"></div><canvas id="ambient-canvas" aria-hidden="true"></canvas>
+<div class="orb orb-one" aria-hidden="true"></div><div class="orb orb-two" aria-hidden="true"></div><div class="orb orb-three" aria-hidden="true"></div>
+{% set logged_in = session.get('tid') or session.get('stid') %}
+{% if logged_in %}<div class="workspace-layout">
+  <aside class="sidebar" id="workspaceSidebar">
+    <div class="sidebar-header">
+    <a class="brand sidebar-brand" href="{{ url_for('teacher_home' if session.get('tid') else 'student_home') }}"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="m3 9 9-6 9 6-9 6-9-6Z"/><path d="M7 12v5c3 2.5 7 2.5 10 0v-5M21 9v6"/></svg></span><span>CampusFlow</span></a>
+    <button class="menu-toggle" id="menuToggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sideNavigation"><span></span><span></span><span></span></button>
+    </div>
+    <div class="sidebar-label">{{ 'TEACHER MENU' if session.get('tid') else 'STUDENT MENU' }}</div>
+    <nav class="side-nav" id="sideNavigation">
+      {% if session.get('tid') %}
+      <a class="side-link {% if request.endpoint == 'teacher_home' %}active{% endif %}" href="{{ url_for('teacher_home') }}"><span class="side-icon">OV</span><span>Overview</span></a>
+      <a class="side-link {% if request.endpoint == 'attendance' %}active{% endif %}" href="{{ url_for('attendance') }}"><span class="side-icon">AT</span><span>Attendance</span><b>›</b></a>
+      <a class="side-link {% if request.endpoint == 'admission' %}active{% endif %}" href="{{ url_for('admission') }}"><span class="side-icon">AD</span><span>New admission</span><b>›</b></a>
+      <a class="side-link {% if request.endpoint == 'marks_entry' %}active{% endif %}" href="{{ url_for('marks_entry') }}"><span class="side-icon">MK</span><span>Add marks</span><b>›</b></a>
+      <a class="side-link {% if request.endpoint == 'update_marks' %}active{% endif %}" href="{{ url_for('update_marks') }}"><span class="side-icon">UP</span><span>Update marks</span><b>›</b></a>
+      <a class="side-link {% if request.endpoint == 'delete_attendance' %}active{% endif %}" href="{{ url_for('delete_attendance') }}"><span class="side-icon">RM</span><span>Manage records</span><b>›</b></a>
+      {% else %}
+      <a class="side-link {% if request.endpoint == 'student_home' %}active{% endif %}" href="{{ url_for('student_home') }}"><span class="side-icon">OV</span><span>My overview</span></a>
+      <a class="side-link {% if request.endpoint == 'student_attendance' %}active{% endif %}" href="{{ url_for('student_attendance') }}"><span class="side-icon">AT</span><span>Attendance</span><b>›</b></a>
+      <a class="side-link {% if request.endpoint == 'student_marks' %}active{% endif %}" href="{{ url_for('student_marks') }}"><span class="side-icon">MK</span><span>Term marks</span><b>›</b></a>
+      {% endif %}
+    </nav>
+    <div class="sidebar-spacer"></div><div class="sidebar-note"><div class="note-glow"></div><span class="note-icon">+</span><strong>Keep moving forward</strong><p>Your progress is built one school day at a time.</p></div>
+    <a class="side-logout" href="{{ url_for('logout') }}"><span>←</span> Sign out</a><div class="sidebar-foot">CAMPUSFLOW <span>|</span> SCHOOL PORTAL</div>
+  </aside>
+<div class="workspace-content"><header class="workspace-topbar"><div class="topbar-title"><span class="crumb">CAMPUSFLOW</span><span class="crumb-slash">/</span><strong>{{ request.endpoint|replace('_',' ')|title }}</strong></div><div class="topbar-right"><button class="pwa-install" id="pwaInstall" type="button" hidden>Install app</button><span class="online-state" id="realtimeStatus"><i></i> CONNECTING</span><div class="profile-chip"><span class="avatar">{{ 'T' if session.get('tid') else 'S' }}</span><span><b>{{ 'Teacher' if session.get('tid') else 'Student' }}</b><small>{{ 'Staff workspace' if session.get('tid') else 'Learner workspace' }}</small></span></div></div></header>
+{% else %}<div class="shell"><header class="topbar"><a class="brand" href="{{ url_for('home') }}"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="m3 9 9-6 9 6-9 6-9-6Z"/><path d="M7 12v5c3 2.5 7 2.5 10 0v-5M21 9v6"/></svg></span><span>CampusFlow</span></a><nav class="nav"><button class="pwa-install" id="pwaInstall" type="button" hidden>Install app</button><a href="{{ url_for('home') }}">Home</a></nav></header>{% endif %}
+{% with messages=get_flashed_messages(with_categories=true) %}{% if messages %}<div class="toast-stack">{% for category,message in messages %}<div class="flash {{ category }}"><span class="flash-dot"></span><span>{{ message }}</span><button type="button" class="flash-close" aria-label="Dismiss message">×</button></div>{% endfor %}</div>{% endif %}{% endwith %}
+<main class="main{% if logged_in %} workspace-main{% endif %}">{% block content %}{% endblock %}</main>
+{% if logged_in %}<footer class="workspace-footer"><span>CampusFlow</span><i>|</i> Making every school day count</footer></div>{% else %}<footer class="footer">CampusFlow | School, made a little simpler</footer></div>{% endif %}
+{% if logged_in %}</div>{% endif %}
+{% if logged_in %}<script src="https://cdn.socket.io/4.8.4/socket.io.min.js" defer></script>{% endif %}
+<script src="{{ url_for('static', filename='js/app.js', v='realtime-2') }}" defer></script>
+</body></html>
